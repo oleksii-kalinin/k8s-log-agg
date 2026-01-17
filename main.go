@@ -5,7 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
-	"path"
+	"path/filepath"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -24,7 +24,7 @@ func main() {
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	home := homedir.HomeDir()
 	if kubeconfigPath == "" {
-		kubeconfigPath = path.Join(home, ".kube", "config")
+		kubeconfigPath = filepath.Join(home, ".kube", "config")
 	}
 
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
@@ -47,6 +47,6 @@ func main() {
 		log.Println("no pods found")
 	}
 	for _, v := range pods.Items {
-		log.Printf("pod: %s, namespace: %s, lables: %s", v.Name, v.Namespace, v.Labels)
+		log.Printf("pod: %s, namespace: %s, labels: %s", v.Name, v.Namespace, v.Labels)
 	}
 }
