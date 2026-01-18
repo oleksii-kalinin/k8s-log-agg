@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	v2 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -48,9 +50,14 @@ func main() {
 		kubeconfigPath = filepath.Join(home, ".kube", "config")
 	}
 
+	if labels == "" {
+		log.Fatalln("No labels provided")
+		return
+	}
+
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
-		panic(err.Error())
+		log.Fatalf("Error reading logs: %v", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -58,37 +65,59 @@ func main() {
 		panic(err.Error())
 	}
 
-	//pods, err := clientset.CoreV1().Pods(namespace).List(cancelCtx, v1.ListOptions{
-	//	LabelSelector: labels,
-	//})
-	//if err != nil {
-	//	panic(err.Error())
-	//}
-	//if len(pods.Items) == 0 {
-	//	log.Println("no pods found")
-	//	return
-	//}
+	// Get pods list for given labels
+
+	if pod == "" {
+		var wg sync.WaitGroup
+
+		podList, err := clientset.CoreV1().Pods(namespace).List(cancelCtx, v1.ListOptions{
+			LabelSelector: labels,
+		})
+		if len(podList.Items) == 0 {
+			log.Fatalln("No pod found")
+		}
+		log.Printf("Found %d pods", len(podList.Items))
+		if err != nil {
+			panic(err.Error())
+		}
+
+		for _, p := range podList.Items {
+			wg.Go(func() {
+				pod := p
+				log.Printf("Starting stream for pod %s", pod.Name)
+				if err = streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow); err != nil {
+					log.Printf("Error streaming pod %s: %v", pod.Name, err)
+				}
+			})
+		}
+		wg.Wait()
+
+	} else {
+		err = streamPodLogs(cancelCtx, clientset, namespace, pod, follow)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				log.Print("exiting")
+				return
+			}
+			log.Fatalf("Error reading logs: %v", err)
+		}
+	}
+	log.Println("Streaming logs, press Ctrl+C to exit")
+	<-cancelCtx.Done()
+	log.Println("Shutting down...")
+}
+
+func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespace, pod string, follow bool) error {
 	logsReq := clientset.CoreV1().Pods(namespace).GetLogs(pod, &v2.PodLogOptions{
 		Follow: follow,
 	})
-	logsResp, err := logsReq.Stream(cancelCtx)
+	logsResp, err := logsReq.Stream(ctx)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Fatalln("pod not found")
-		}
-		if apierrors.IsBadRequest(err) {
-			log.Fatalf("Invalid request: %v", err)
-		}
-		log.Fatalln(err.Error())
+		return fmt.Errorf("failed to stream pod '%s': %w", pod, err)
 	}
 	defer logsResp.Close()
 
 	_, err = io.Copy(os.Stdout, logsResp)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			log.Print("exiting")
-			return
-		}
-		panic(err.Error())
-	}
+
+	return err
 }
