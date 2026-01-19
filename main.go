@@ -57,7 +57,7 @@ func main() {
 
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
-		log.Fatalf("Error reading logs: %v", err)
+		log.Fatalf("Error loading kubeconfig: %v", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
