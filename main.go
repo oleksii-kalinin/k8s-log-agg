@@ -50,8 +50,8 @@ func main() {
 		kubeconfigPath = filepath.Join(home, ".kube", "config")
 	}
 
-	if labels == "" {
-		log.Fatalln("No labels provided")
+	if pod == "" && labels == "" {
+		log.Fatalln("No labels provided (required when --pod is omitted)")
 		return
 	}
 
@@ -73,22 +73,24 @@ func main() {
 		podList, err := clientset.CoreV1().Pods(namespace).List(cancelCtx, v1.ListOptions{
 			LabelSelector: labels,
 		})
+		if err != nil {
+			log.Fatalf("Error listing pods: %v", err)
+		}
+
 		if len(podList.Items) == 0 {
 			log.Fatalln("No pod found")
 		}
 		log.Printf("Found %d pods", len(podList.Items))
-		if err != nil {
-			panic(err.Error())
-		}
 
 		for _, p := range podList.Items {
-			wg.Go(func() {
-				pod := p
+			wg.Add(1)
+			go func(pod v2.Pod) {
+				defer wg.Done()
 				log.Printf("Starting stream for pod %s", pod.Name)
 				if err = streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow); err != nil {
 					log.Printf("Error streaming pod %s: %v", pod.Name, err)
 				}
-			})
+			}(p)
 		}
 		wg.Wait()
 
@@ -101,6 +103,9 @@ func main() {
 			}
 			log.Fatalf("Error reading logs: %v", err)
 		}
+	}
+	if !follow {
+		return
 	}
 	log.Println("Streaming logs, press Ctrl+C to exit")
 	<-cancelCtx.Done()
