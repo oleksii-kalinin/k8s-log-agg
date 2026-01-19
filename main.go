@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -19,6 +19,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
+
+type LogLine struct {
+	PodName string
+	Log     string
+}
 
 func main() {
 	var labels string
@@ -65,10 +70,20 @@ func main() {
 		panic(err.Error())
 	}
 
-	// Get pods list for given labels
+	logChan := make(chan LogLine, 100)
+	var wg sync.WaitGroup
+	var logWg sync.WaitGroup
 
+	logWg.Add(1)
+	go func() {
+		defer logWg.Done()
+		for logLine := range logChan {
+			fmt.Printf("[%s] %s\n", logLine.PodName, logLine.Log)
+		}
+	}()
+
+	// Get pods list for given labels
 	if pod == "" {
-		var wg sync.WaitGroup
 
 		podList, err := clientset.CoreV1().Pods(namespace).List(cancelCtx, v1.ListOptions{
 			LabelSelector: labels,
@@ -81,38 +96,53 @@ func main() {
 			log.Fatalln("No pod found")
 		}
 		log.Printf("Found %d pods", len(podList.Items))
+		if follow {
+			log.Println("Streaming logs, press Ctrl+C to exit")
+		}
 
 		for _, p := range podList.Items {
 			wg.Add(1)
 			go func(pod v2.Pod) {
 				defer wg.Done()
 				log.Printf("Starting stream for pod %s", pod.Name)
-				if err := streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow); err != nil {
-					log.Printf("Error streaming pod %s: %v", pod.Name, err)
+				if err := streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow, logChan); err != nil {
+					if !errors.Is(err, context.Canceled) {
+						log.Printf("Error streaming pod %s: %v", pod.Name, err)
+					}
 				}
 			}(p)
 		}
-		wg.Wait()
-
 	} else {
-		err = streamPodLogs(cancelCtx, clientset, namespace, pod, follow)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				log.Print("exiting")
-				return
-			}
-			log.Fatalf("Error reading logs: %v", err)
+		if follow {
+			log.Println("Streaming logs, press Ctrl+C to exit")
+			log.Printf("Starting stream for pod %s", pod)
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err = streamPodLogs(cancelCtx, clientset, namespace, pod, follow, logChan)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					log.Print("exiting")
+					return
+				}
+				log.Printf("Error reading logs: %v", err)
+			}
+		}()
 	}
-	if !follow {
-		return
+	if follow {
+		<-cancelCtx.Done()
 	}
-	log.Println("Streaming logs, press Ctrl+C to exit")
-	<-cancelCtx.Done()
+
+	wg.Wait()
+	close(logChan)
+
+	logWg.Wait()
+
 	log.Println("Shutting down...")
 }
 
-func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespace, pod string, follow bool) error {
+func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespace, pod string, follow bool, logChan chan<- LogLine) error {
 	logsReq := clientset.CoreV1().Pods(namespace).GetLogs(pod, &v2.PodLogOptions{
 		Follow: follow,
 	})
@@ -122,7 +152,15 @@ func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespa
 	}
 	defer logsResp.Close()
 
-	_, err = io.Copy(os.Stdout, logsResp)
+	buf := make([]byte, 0, 64*1024)
+	scanner := bufio.NewScanner(logsResp)
+	scanner.Buffer(buf, 1024*1024)
 
-	return err
+	for scanner.Scan() {
+		logChan <- LogLine{
+			Log:     scanner.Text(),
+			PodName: pod,
+		}
+	}
+	return scanner.Err()
 }
