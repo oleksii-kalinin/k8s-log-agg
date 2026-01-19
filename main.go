@@ -87,7 +87,7 @@ func main() {
 			go func(pod v2.Pod) {
 				defer wg.Done()
 				log.Printf("Starting stream for pod %s", pod.Name)
-				if err = streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow); err != nil {
+				if err := streamPodLogs(cancelCtx, clientset, pod.Namespace, pod.Name, follow); err != nil {
 					log.Printf("Error streaming pod %s: %v", pod.Name, err)
 				}
 			}(p)
