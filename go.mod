@@ -3,9 +3,9 @@ module github.com/oleksii-kalinin/k8s-log-agg
 go 1.25.0
 
 require (
-	k8s.io/api v0.35.0
-	k8s.io/apimachinery v0.35.0
-	k8s.io/client-go v0.35.0
+	k8s.io/api v0.35.2
+	k8s.io/apimachinery v0.35.2
+	k8s.io/client-go v0.35.2
 )
 
 require (
